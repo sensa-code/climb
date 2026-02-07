@@ -68,7 +68,7 @@ summary: ""        # 未來由 AI 自動摘要
 |---------|------|------|------|
 | 1 | Jina Reader | 免費 API，`r.jina.ai/{url}` 自動轉 Markdown | ✅ 已實作 |
 | 2 | BeautifulSoup | requests + BS4 直接解析 HTML | ✅ 已實作 |
-| 3 | Playwright | 瀏覽器自動化，處理 JS 渲染頁面 | ❌ 待實作 |
+| 3 | Playwright | 瀏覽器自動化，處理 JS 渲染頁面 | ✅ 已實作 |
 
 ### 平台支援
 
@@ -83,17 +83,17 @@ summary: ""        # 未來由 AI 自動摘要
 
 ### 待開發功能
 
-- [ ] Playwright 第三層策略（處理需要 JS 渲染的頁面）
+- [x] Playwright 第三層策略（處理需要 JS 渲染的頁面）
+- [x] 重複 URL 偵測（避免重抓同一篇）
+- [x] 抓取失敗的自動重試機制
+- [x] 支援抓取 PTT 看板列表頁，自動提取文章 URL
 - [ ] 排程自動執行（cron 或 schedule 套件）
-- [ ] 重複 URL 偵測（避免重抓同一篇）
-- [ ] 抓取失敗的自動重試機制
-- [ ] 支援抓取 PTT 看板列表頁，自動提取文章 URL
 
 ### CLI 使用方式
 
 ```bash
 # 安裝依賴
-pip install requests beautifulsoup4 markdownify
+pip install -r requirements.txt
 
 # 單篇擷取
 python scraper.py https://www.ptt.cc/bbs/dog/M.xxxxx.html
@@ -118,7 +118,7 @@ python scraper.py https://facebook.com/xxx --identify
 
 ---
 
-## 模組二：Chrome Extension（❌ 待開發）
+## 模組二：Chrome Extension（✅ 已完成基礎版）
 
 ### 目的
 
@@ -261,7 +261,7 @@ client = anthropic.Anthropic()  # 從環境變數讀取 ANTHROPIC_API_KEY
 | requests | HTTP 請求 |
 | BeautifulSoup4 | HTML 解析 |
 | markdownify | HTML → Markdown 轉換 |
-| Playwright (待裝) | 瀏覽器自動化兜底策略 |
+| Playwright | 瀏覽器自動化兜底策略 |
 | Jina Reader API | 免費網頁轉 Markdown |
 | Chrome Extension (Manifest V3) | 模組二，JS/HTML/CSS |
 | Anthropic Claude API | 模組三 AI 處理 |
@@ -277,10 +277,10 @@ client = anthropic.Anthropic()  # 從環境變數讀取 ANTHROPIC_API_KEY
 
 ## 開發優先順序
 
-1. ✅ 模組一基礎版（已完成）
-2. 🔜 模組二 Chrome Extension（解決 Facebook 粉專這個最大痛點）
+1. ✅ 模組一基礎版（已完成，含 Playwright、重複偵測、重試機制、PTT 看板爬取）
+2. ✅ 模組二 Chrome Extension（已完成基礎版，含 API Server、FB/IG 提取器）
 3. 🔜 模組三批次整理腳本（處理已儲存的內容）
-4. 模組一增強：加入 Playwright、排程、重複偵測
+4. 模組一增強：排程自動執行
 5. AI Pipeline：自動分類 + 摘要 + 衛教文章草稿生成
 6. 平台整合：接入 Supabase 和 shangxian-platform
 

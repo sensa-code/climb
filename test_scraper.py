@@ -5,6 +5,9 @@ scraper.py 單元測試
 """
 
 import json
+import os
+import sys
+import subprocess
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -654,6 +657,99 @@ class TestFetchWithPlaywright:
         with patch.dict("sys.modules", {"playwright.sync_api": mock_module}):
             scraper.fetch_with_playwright("https://www.ptt.cc/bbs/cat/M.123.html")
         mock_context.add_cookies.assert_called_once()
+
+
+# ============================================================
+# Playwright 安裝管理
+# ============================================================
+
+class TestPlaywrightHelpers:
+    """check_playwright_status / install_playwright_browsers 測試"""
+
+    def test_check_status_not_installed(self):
+        """playwright 未安裝時回傳 installed=False"""
+        with patch("scraper.importlib.util.find_spec", return_value=None):
+            status = scraper.check_playwright_status()
+        assert status["installed"] is False
+        assert status["browsers_ready"] is False
+
+    def test_check_status_installed_no_browser(self, tmp_path):
+        """playwright 已安裝但無 Chromium"""
+        with patch("scraper.importlib.util.find_spec", return_value=True):
+            # mock 瀏覽器目錄不存在
+            with patch("scraper.Path") as mock_path_cls:
+                mock_pw_dir = MagicMock()
+                mock_pw_dir.exists.return_value = False
+                mock_path_cls.return_value = mock_pw_dir
+                # 同時 mock compute_driver_executable
+                with patch.dict("sys.modules", {"playwright._impl._driver": MagicMock()}):
+                    with patch("subprocess.run", side_effect=Exception("no driver")):
+                        # 最終備選的 launch 也失敗
+                        with patch.dict("sys.modules", {
+                            "playwright.sync_api": MagicMock(
+                                sync_playwright=MagicMock(side_effect=Exception("no browser"))
+                            )
+                        }):
+                            status = scraper.check_playwright_status()
+        assert status["installed"] is True
+        assert status["browsers_ready"] is False
+
+    def test_check_status_installed_with_browser(self, tmp_path):
+        """playwright 已安裝且有 Chromium — 直接 launch 成功"""
+        mock_browser = MagicMock()
+        mock_pw = MagicMock()
+        mock_pw.chromium.launch.return_value = mock_browser
+
+        mock_cm = MagicMock()
+        mock_cm.__enter__ = MagicMock(return_value=mock_pw)
+        mock_cm.__exit__ = MagicMock(return_value=False)
+        mock_sync = MagicMock(return_value=mock_cm)
+
+        import types
+        mock_module = types.ModuleType("playwright.sync_api")
+        mock_module.sync_playwright = mock_sync
+
+        with patch("scraper.importlib.util.find_spec", return_value=True):
+            with patch.dict("sys.modules", {"playwright._impl._driver": MagicMock()}):
+                with patch("subprocess.run", side_effect=Exception("skip")):
+                    with patch.dict("sys.modules", {"playwright.sync_api": mock_module}):
+                        status = scraper.check_playwright_status()
+        assert status["installed"] is True
+        assert status["browsers_ready"] is True
+
+    def test_install_not_installed(self):
+        """playwright 未安裝時回傳失敗"""
+        with patch("scraper.importlib.util.find_spec", return_value=None):
+            success, msg = scraper.install_playwright_browsers()
+        assert success is False
+        assert "未安裝" in msg
+
+    def test_install_success(self):
+        """安裝成功"""
+        with patch("scraper.importlib.util.find_spec", return_value=True):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="OK")
+                success, msg = scraper.install_playwright_browsers()
+        assert success is True
+
+    def test_install_failure(self):
+        """安裝失敗"""
+        with patch("scraper.importlib.util.find_spec", return_value=True):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=1, stderr="connection error", stdout=""
+                )
+                success, msg = scraper.install_playwright_browsers()
+        assert success is False
+        assert "connection error" in msg
+
+    def test_install_timeout(self):
+        """安裝逾時"""
+        with patch("scraper.importlib.util.find_spec", return_value=True):
+            with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 300)):
+                success, msg = scraper.install_playwright_browsers()
+        assert success is False
+        assert "逾時" in msg
 
 
 # ============================================================

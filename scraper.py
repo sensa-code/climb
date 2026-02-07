@@ -24,6 +24,8 @@ import time
 import hashlib
 import argparse
 import logging
+import subprocess
+import importlib.util
 import urllib.robotparser
 import urllib.request
 import urllib.error
@@ -526,6 +528,94 @@ def fetch_with_playwright(url: str) -> dict | None:
     except Exception as e:
         logger.warning(f"[Playwright] 擷取失敗：{e}")
         return None
+
+
+# ============================================================
+# Playwright 安裝管理
+# ============================================================
+
+def check_playwright_status() -> dict:
+    """檢查 Playwright 安裝狀態。
+
+    回傳 dict:
+        installed (bool): playwright 套件是否已安裝
+        browsers_ready (bool): Chromium 瀏覽器是否已下載
+    """
+    result = {"installed": False, "browsers_ready": False}
+
+    # 檢查 playwright 套件
+    if importlib.util.find_spec("playwright") is None:
+        return result
+    result["installed"] = True
+
+    # 檢查 Chromium 瀏覽器是否已下載（直接檢查執行檔是否存在）
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        driver_exec = compute_driver_executable()
+        # 用 playwright 內部 API 取得瀏覽器路徑
+        proc = subprocess.run(
+            [str(driver_exec), "print-api-json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        # 備選方案：直接檢查 ms-playwright 目錄中是否有 chromium
+        if sys.platform == "win32":
+            pw_dir = Path(os.environ.get(
+                "PLAYWRIGHT_BROWSERS_PATH",
+                os.path.expanduser("~/AppData/Local/ms-playwright"),
+            ))
+        else:
+            pw_dir = Path(os.environ.get(
+                "PLAYWRIGHT_BROWSERS_PATH",
+                os.path.expanduser("~/.cache/ms-playwright"),
+            ))
+        # 搜尋 chromium 相關目錄
+        if pw_dir.exists():
+            chromium_dirs = [d for d in pw_dir.iterdir()
+                            if d.is_dir() and "chromium" in d.name.lower()]
+            for cdir in chromium_dirs:
+                # 檢查是否有實際的可執行檔
+                exes = list(cdir.rglob("chrome*"))
+                if exes:
+                    result["browsers_ready"] = True
+                    break
+    except Exception:
+        # 最終備選：嘗試快速 launch 測試
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                browser.close()
+            result["browsers_ready"] = True
+        except Exception:
+            result["browsers_ready"] = False
+
+    return result
+
+
+def install_playwright_browsers() -> tuple[bool, str]:
+    """安裝 Playwright Chromium 瀏覽器。
+
+    回傳 (success, message) tuple。
+    """
+    if importlib.util.find_spec("playwright") is None:
+        return False, "playwright 套件未安裝，請先執行 pip install playwright"
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=300,
+            encoding="utf-8", errors="replace",
+        )
+        if proc.returncode == 0:
+            logger.info("[Playwright] Chromium 瀏覽器安裝成功")
+            return True, "Chromium 安裝成功"
+        error_msg = (proc.stderr or proc.stdout or "未知錯誤").strip()
+        logger.warning(f"[Playwright] Chromium 安裝失敗：{error_msg}")
+        return False, error_msg
+    except subprocess.TimeoutExpired:
+        return False, "安裝逾時（超過 5 分鐘）"
+    except Exception as e:
+        return False, str(e)
 
 
 # ============================================================

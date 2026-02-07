@@ -48,6 +48,32 @@ class SettingsTab:
         self._add_text_field(scroll, "jina_base_url", "Jina 基本 URL")
         self._add_secret_field(scroll, "jina_api_key", "Jina API Key")
 
+        # --- Playwright ---
+        self._add_section(scroll, "Playwright")
+
+        pw_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+        pw_frame.pack(fill="x", pady=(0, PAD_INNER))
+
+        self._pw_status_label = ctk.CTkLabel(
+            pw_frame, text="檢查中...", font=FONT_SMALL, anchor="w",
+        )
+        self._pw_status_label.pack(side="left", fill="x", expand=True)
+
+        self._pw_install_btn = ctk.CTkButton(
+            pw_frame, text="安裝 Chromium", width=120, font=FONT_SMALL,
+            command=self._install_playwright,
+        )
+        self._pw_install_btn.pack(side="right", padx=(PAD_INNER, 0))
+
+        ctk.CTkButton(
+            pw_frame, text="檢查狀態", width=80, font=FONT_SMALL,
+            fg_color="gray40", hover_color="gray30",
+            command=self._check_playwright_status,
+        ).pack(side="right")
+
+        # 初始檢查 Playwright 狀態
+        self.parent.after(200, self._check_playwright_status)
+
         # --- 日誌 ---
         self._add_section(scroll, "日誌")
 
@@ -264,3 +290,51 @@ class SettingsTab:
     def _on_theme_change(self):
         """主題變更"""
         ctk.set_appearance_mode(self._theme_var.get())
+
+    # --- Playwright 管理 ---
+
+    def _check_playwright_status(self):
+        """檢查 Playwright 安裝狀態並更新 UI"""
+        import threading
+
+        def _worker():
+            status = scraper.check_playwright_status()
+            self.parent.after(0, lambda: self._update_pw_ui(status))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _update_pw_ui(self, status: dict):
+        """根據狀態更新 Playwright UI 元件"""
+        if not status["installed"]:
+            text = "❌ 未安裝 — 請先執行 pip install playwright"
+            self._pw_install_btn.configure(state="disabled")
+        elif not status["browsers_ready"]:
+            text = "⚠️ 已安裝，但 Chromium 瀏覽器未下載"
+            self._pw_install_btn.configure(state="normal")
+        else:
+            text = "✅ 已安裝，Chromium 就緒"
+            self._pw_install_btn.configure(state="disabled")
+        self._pw_status_label.configure(text=f"狀態：{text}")
+
+    def _install_playwright(self):
+        """背景安裝 Playwright Chromium"""
+        import threading
+
+        self._pw_install_btn.configure(state="disabled")
+        self._pw_status_label.configure(text="狀態：正在安裝 Chromium（可能需要幾分鐘）...")
+
+        def _worker():
+            success, msg = scraper.install_playwright_browsers()
+            self.parent.after(0, lambda: self._on_pw_install_done(success, msg))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_pw_install_done(self, success: bool, msg: str):
+        """Playwright 安裝完成回調"""
+        if success:
+            self._pw_status_label.configure(text="狀態：✅ Chromium 安裝成功！")
+        else:
+            self._pw_status_label.configure(
+                text=f"狀態：❌ 安裝失敗 — {msg[:80]}"
+            )
+        self._check_playwright_status()
