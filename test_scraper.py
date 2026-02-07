@@ -20,7 +20,7 @@ class TestIdentifyPlatform:
     def test_ptt(self):
         r = scraper.identify_platform("https://www.ptt.cc/bbs/dog/M.123.html")
         assert r["name"] == "PTT"
-        assert r["strategy"] == "jina"
+        assert r["strategy"] == "bs4"
         assert r["needs_login"] is False
 
     def test_medium(self):

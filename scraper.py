@@ -231,7 +231,7 @@ def _yaml_safe_title(title: str) -> str:
 
 PLATFORM_RULES = [
     # (名稱, 域名關鍵字列表, 是否需要登入, 建議策略)
-    ("PTT",        ["ptt.cc"],                          False, "jina"),
+    ("PTT",        ["ptt.cc"],                          False, "bs4"),
     ("Medium",     ["medium.com"],                      False, "jina"),
     ("痞客邦",     ["pixnet.net"],                       False, "jina"),
     ("方格子",     ["vocus.cc"],                         False, "jina"),
