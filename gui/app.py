@@ -112,18 +112,24 @@ class ClimbApp(ctk.CTk):
     def _poll_queues(self):
         """輪詢所有 queue，將資料分派到對應的 GUI 元件"""
         # 處理日誌 queue
-        try:
-            for _ in range(50):  # 每次最多處理 50 條，避免卡住 UI
+        for _ in range(50):  # 每次最多處理 50 條，避免卡住 UI
+            try:
                 level, msg = self.log_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
                 log_tab = self._tabs.get("日誌")
                 if log_tab:
                     log_tab.append_log(level, msg)
-        except queue.Empty:
-            pass
+            except Exception:
+                pass
 
         # 讓各頁籤輪詢自己的 queue
         for tab in self._pollable_tabs:
-            tab.poll_queues()
+            try:
+                tab.poll_queues()
+            except Exception:
+                pass
 
         # 每 100ms 輪詢一次
         self.after(100, self._poll_queues)

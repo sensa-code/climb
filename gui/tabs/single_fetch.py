@@ -121,20 +121,25 @@ class SingleFetchTab:
     def poll_queues(self):
         """輪詢自己的 queue（由主視窗呼叫）"""
         # 進度
-        try:
-            while True:
+        for _ in range(50):
+            try:
                 current, total, message = self._progress_queue.get_nowait()
                 self._progress.update_progress(current, total, message)
-        except queue.Empty:
-            pass
+            except queue.Empty:
+                break
+            except Exception:
+                break
 
         # 結果
-        try:
-            while True:
+        for _ in range(50):
+            try:
                 url, status, data = self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
                 self._on_result(url, status, data)
-        except queue.Empty:
-            pass
+            except Exception as e:
+                scraper.logger.error(f"處理結果時發生錯誤：{e}")
 
     def _on_platform_identified(self, platform_name: str):
         """平台識別完成"""
