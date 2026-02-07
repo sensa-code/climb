@@ -7,5 +7,8 @@
   "jina_base_url": "https://r.jina.ai/",
   "log_level": "INFO",
   "extension_server_port": 3456,
-  "extension_server_auto_start": false
+  "extension_server_auto_start": false,
+  "anthropic_api_key": "",
+  "ai_model": "claude-sonnet-4-20250514",
+  "ai_api_delay": 1.0
 }

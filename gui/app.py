@@ -77,6 +77,7 @@ class ClimbApp(ctk.CTk):
         from gui.tabs.batch_fetch import BatchFetchTab
         from gui.tabs.ptt_board import PttBoardTab
         from gui.tabs.extension_tab import ExtensionTab
+        from gui.tabs.ai_process import AIProcessTab
         from gui.tabs.settings import SettingsTab
         from gui.tabs.article_browser import ArticleBrowserTab
         from gui.tabs.log_viewer import LogViewerTab
@@ -86,6 +87,7 @@ class ClimbApp(ctk.CTk):
             ("批次擷取", BatchFetchTab),
             ("PTT 看板", PttBoardTab),
             ("Extension", ExtensionTab),
+            ("AI 處理", AIProcessTab),
             ("設定", SettingsTab),
             ("文章瀏覽", ArticleBrowserTab),
             ("日誌", LogViewerTab),

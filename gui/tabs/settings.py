@@ -74,6 +74,12 @@ class SettingsTab:
         # 初始檢查 Playwright 狀態
         self.parent.after(200, self._check_playwright_status)
 
+        # --- AI 處理 (Claude API) ---
+        self._add_section(scroll, "AI 處理 (Claude API)")
+        self._add_secret_field(scroll, "anthropic_api_key", "Anthropic API Key")
+        self._add_text_field(scroll, "ai_model", "模型名稱", width=300)
+        self._add_number_field(scroll, "ai_api_delay", "API 呼叫間隔（秒）")
+
         # --- 日誌 ---
         self._add_section(scroll, "日誌")
 
@@ -210,6 +216,9 @@ class SettingsTab:
             "politeness_delay": str(config.get("politeness_delay", scraper.POLITENESS_DELAY)),
             "jina_base_url": config.get("jina_base_url", scraper.JINA_BASE_URL),
             "jina_api_key": scraper.JINA_API_KEY,
+            "anthropic_api_key": config.get("anthropic_api_key", ""),
+            "ai_model": config.get("ai_model", "claude-sonnet-4-20250514"),
+            "ai_api_delay": str(config.get("ai_api_delay", 1.0)),
         }
 
         for key, value in field_map.items():
@@ -232,6 +241,8 @@ class SettingsTab:
                 "politeness_delay": int(self._entries["politeness_delay"].get()),
                 "jina_base_url": self._entries["jina_base_url"].get().strip(),
                 "log_level": self._log_level_var.get(),
+                "ai_model": self._entries["ai_model"].get().strip(),
+                "ai_api_delay": float(self._entries["ai_api_delay"].get()),
             }
 
             # 驗證數值
@@ -260,6 +271,11 @@ class SettingsTab:
             jina_key = self._entries["jina_api_key"].get().strip()
             if jina_key:
                 scraper.JINA_API_KEY = jina_key
+
+            # 更新 Anthropic API Key（如果有填）
+            anthropic_key = self._entries["anthropic_api_key"].get().strip()
+            if anthropic_key:
+                new_config["anthropic_api_key"] = anthropic_key
 
             # 更新日誌等級
             scraper.logger.setLevel(getattr(

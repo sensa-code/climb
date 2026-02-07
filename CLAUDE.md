@@ -58,7 +58,8 @@ summary: ""        # 未來由 AI 自動摘要
 
 ### 現有檔案
 
-- `scraper.py` — 主程式，含平台識別、Jina/BS4 雙策略降級、圖片下載、Markdown 儲存
+- `scraper.py` — 主程式，含平台識別、Jina/BS4/Playwright 三層策略、圖片下載、Markdown 儲存
+- `ai_processor.py` — AI 批次處理模組，Claude API 分類/摘要/關鍵資訊提取
 - `urls.txt` — 批次 URL 清單範本
 - `README.md` — 使用說明
 
@@ -170,7 +171,7 @@ Extension → POST http://localhost:3456/save → Python server → ~/vet-articl
 
 ---
 
-## 模組三：批次整理腳本（❌ 待開發）
+## 模組三：AI 批次處理（✅ 基礎版已完成）
 
 ### 目的
 
@@ -244,12 +245,21 @@ client = anthropic.Anthropic()  # 從環境變數讀取 ANTHROPIC_API_KEY
 - 每次送入一篇文章，避免 context 過長
 - 對截圖使用 vision 能力進行 OCR
 
-### 待確認
+### 已完成功能
 
-- [ ] Claude API key 是否已準備好
-- [ ] 優先處理哪種輸入格式
-- [ ] 分類體系是否需要調整
-- [ ] 是否需要產出衛教文章草稿（還是先做到分類摘要即可）
+- [x] Claude API 整合（anthropic SDK）
+- [x] 文章掃描 + 費用估算
+- [x] AI 分類（獸醫專業分類體系）
+- [x] AI 摘要 + 關鍵要點提取
+- [x] Frontmatter 自動更新
+- [x] GUI 頁籤（掃描 → 選擇 → 處理 → 結果）
+- [x] CLI 支援（`python ai_processor.py --scan/--process`）
+
+### 待開發
+
+- [ ] 圖片 OCR（Claude Vision API）
+- [ ] 衛教文章草稿自動生成
+- [ ] Batches API 批次處理（降低成本）
 
 ---
 
@@ -279,9 +289,9 @@ client = anthropic.Anthropic()  # 從環境變數讀取 ANTHROPIC_API_KEY
 
 1. ✅ 模組一基礎版（已完成，含 Playwright、重複偵測、重試機制、PTT 看板爬取）
 2. ✅ 模組二 Chrome Extension（已完成基礎版，含 API Server、FB/IG 提取器）
-3. 🔜 模組三批次整理腳本（處理已儲存的內容）
-4. 模組一增強：排程自動執行
-5. AI Pipeline：自動分類 + 摘要 + 衛教文章草稿生成
+3. ✅ 模組三 AI 批次處理（已完成基礎版，含分類、摘要、關鍵資訊提取）
+4. 🔜 模組一增強：排程自動執行
+5. 🔜 模組三增強：圖片 OCR、衛教文章草稿生成、Batches API
 6. 平台整合：接入 Supabase 和 shangxian-platform
 
 ---
