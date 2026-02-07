@@ -192,7 +192,20 @@ class PttBoardTab:
 
             base_url = "https://www.ptt.cc"
             board_url = f"{base_url}/bbs/{board}/index.html"
-            cookies = {"over18": "1"}
+
+            # 使用 Session 維持連線，避免 ConnectionResetError
+            session = req.Session()
+            session.cookies.set("over18", "1")
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                              'AppleWebKit/537.36 (KHTML, like Gecko) '
+                              'Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Referer': 'https://www.ptt.cc/',
+            })
 
             article_urls = []
             article_titles = []
@@ -205,11 +218,24 @@ class PttBoardTab:
                 progress_queue.put((page_num + 1, pages + 1,
                                     f"掃描第 {page_num + 1}/{pages} 頁..."))
 
-                resp = req.get(
-                    current_url, headers=scraper.HEADERS,
-                    cookies=cookies, timeout=scraper.REQUEST_TIMEOUT,
-                )
-                resp.raise_for_status()
+                # 重試機制（最多 3 次）
+                resp = None
+                for attempt in range(3):
+                    try:
+                        resp = session.get(
+                            current_url, timeout=scraper.REQUEST_TIMEOUT,
+                        )
+                        resp.raise_for_status()
+                        break
+                    except (req.ConnectionError, req.Timeout) as e:
+                        if attempt < 2:
+                            scraper.logger.warning(
+                                f"PTT 連線失敗（第 {attempt + 1} 次），{2 ** attempt} 秒後重試..."
+                            )
+                            time.sleep(2 ** attempt)
+                        else:
+                            raise
+
                 soup = BeautifulSoup(resp.text, "html.parser")
 
                 # 取得文章列表
@@ -233,6 +259,12 @@ class PttBoardTab:
                     current_url = base_url + prev_link["href"]
                 else:
                     break
+
+                # 頁與頁之間禮貌延遲
+                if page_num < pages - 1:
+                    time.sleep(1)
+
+            session.close()
 
             # 過濾已擷取的
             new_urls = []

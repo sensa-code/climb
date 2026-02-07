@@ -336,9 +336,80 @@ def _extract_title_from_jina(content: str) -> str:
 # 第三步：HTML 解析（BS4 和 Playwright 共用）
 # ============================================================
 
+def _parse_ptt_article(soup, url: str, source: str = "bs4") -> dict | None:
+    """PTT 專用解析器 — 處理 #main-content 結構"""
+    main = soup.find('div', id='main-content')
+    if not main:
+        return None
+
+    # 提取 meta 資訊（作者、看板、標題、時間）
+    meta = {}
+    for metaline in main.select('div.article-metaline'):
+        tag = metaline.select_one('span.article-meta-tag')
+        value = metaline.select_one('span.article-meta-value')
+        if tag and value:
+            meta[tag.get_text(strip=True)] = value.get_text(strip=True)
+
+    title = meta.get('標題', '')
+
+    # 移除 metaline 和推文，只留正文
+    for tag in main.select('div.article-metaline, div.article-metaline-right, '
+                           'div.push, span.f2'):
+        tag.decompose()
+
+    # 取得正文（PTT 正文是 #main-content 內的文字節點）
+    content = main.get_text(separator='\n').strip()
+
+    # 清理：移除前後多餘的空行
+    lines = content.splitlines()
+    # 移除開頭的空行
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    # 移除結尾的 "--" 分隔線及之後的內容（通常是簽名檔）
+    for i, line in enumerate(lines):
+        if line.strip() == '--':
+            lines = lines[:i]
+            break
+    content = '\n'.join(lines).strip()
+
+    # 提取圖片
+    images = []
+    for img in main.find_all('img'):
+        src = img.get('src') or img.get('data-src')
+        if src:
+            images.append(urljoin(url, src))
+
+    # 也從文字中找圖片連結（PTT 常用 imgur 等直連）
+    for line in content.splitlines():
+        line = line.strip()
+        if re.match(r'https?://\S+\.(jpg|jpeg|png|gif|webp)', line, re.I):
+            if line not in images:
+                images.append(line)
+
+    if not content or len(content) < 30:
+        return None
+
+    return {
+        "title": title or "未命名文章",
+        "content": content,
+        "source": source,
+        "url": url,
+        "images": images,
+        "meta": meta,
+    }
+
+
 def _parse_html_to_article(html: str, url: str, source: str = "bs4") -> dict | None:
     """將 HTML 解析為 article dict（BS4 和 Playwright 共用）"""
     soup = BeautifulSoup(html, 'html.parser')
+
+    # PTT 專用解析
+    parsed = urlparse(url)
+    if 'ptt.cc' in parsed.netloc:
+        result = _parse_ptt_article(soup, url, source)
+        if result:
+            return result
+        # 如果 PTT 專用解析失敗，繼續用通用邏輯
 
     # 移除不需要的元素
     for tag in soup.find_all(['script', 'style', 'nav', 'footer',
@@ -398,7 +469,13 @@ def fetch_with_bs4(url: str) -> dict | None:
     """用 requests + BeautifulSoup 擷取網頁"""
     try:
         logger.info(f"[BS4] 正在擷取：{url}")
-        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        # PTT 需要 over18 cookie 才能存取內容
+        cookies = {}
+        parsed = urlparse(url)
+        if 'ptt.cc' in parsed.netloc:
+            cookies['over18'] = '1'
+        resp = requests.get(url, headers=HEADERS, cookies=cookies,
+                            timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         resp.encoding = resp.apparent_encoding or 'utf-8'
         return _parse_html_to_article(resp.text, url, source="bs4")
