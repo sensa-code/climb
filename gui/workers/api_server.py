@@ -14,6 +14,7 @@ Extension API Server
 import json
 import os
 import queue
+import socket
 import threading
 import time
 from datetime import datetime
@@ -24,8 +25,24 @@ from typing import Optional
 import scraper
 
 
+class _DualStackHTTPServer(HTTPServer):
+    """支援 IPv4 + IPv6 dual-stack 的 HTTPServer。
+    Chrome 瀏覽器可能用 IPv6 (::1) 連 localhost，
+    需要同時監聽 IPv4 和 IPv6。
+    """
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        # 啟用 dual-stack：同時接受 IPv4 和 IPv6 連線
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 class _CORSRequestHandler(BaseHTTPRequestHandler):
     """處理 CORS 和路由的 HTTP Request Handler"""
+
+    # 使用 HTTP/1.1 支援 keep-alive（瀏覽器 CORS preflight 需要）
+    protocol_version = "HTTP/1.1"
 
     # 類別層級屬性，由 ArticleAPIServer 設定
     _output_dir: str = ""
@@ -38,20 +55,24 @@ class _CORSRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # Chrome Private Network Access (PNA) — 允許從 public 網站存取 localhost
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def _send_json(self, status_code: int, data: dict):
         """回傳 JSON 回應"""
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self._set_cors_headers()
         self.end_headers()
-        body = json.dumps(data, ensure_ascii=False)
-        self.wfile.write(body.encode("utf-8"))
+        self.wfile.write(body)
 
     def do_OPTIONS(self):
         """處理 CORS preflight 請求"""
-        self.send_response(204)
+        self.send_response(200)
         self._set_cors_headers()
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self):
@@ -236,7 +257,16 @@ class ArticleAPIServer:
             _CORSRequestHandler._log_queue = self.log_queue
             _CORSRequestHandler._port = self.port
 
-            self._server = HTTPServer(("127.0.0.1", self.port), _CORSRequestHandler)
+            try:
+                # 嘗試 IPv6 dual-stack（同時支援 IPv4 + IPv6）
+                self._server = _DualStackHTTPServer(
+                    ("::", self.port), _CORSRequestHandler
+                )
+            except (OSError, socket.error):
+                # 若 IPv6 不可用，回退到純 IPv4
+                self._server = HTTPServer(
+                    ("127.0.0.1", self.port), _CORSRequestHandler
+                )
             self._thread = threading.Thread(
                 target=self._server.serve_forever,
                 daemon=True,
