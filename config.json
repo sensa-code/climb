@@ -1,0 +1,9 @@
+{
+  "output_dir": "~/vet-articles",
+  "request_timeout": 30,
+  "max_retries": 3,
+  "retry_base_delay": 2,
+  "politeness_delay": 2,
+  "jina_base_url": "https://r.jina.ai/",
+  "log_level": "INFO"
+}

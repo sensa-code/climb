@@ -40,13 +40,51 @@ from markdownify import markdownify as md
 # 設定
 # ============================================================
 
-DEFAULT_OUTPUT_DIR = os.path.expanduser("~/vet-articles")
-REQUEST_TIMEOUT = 30
-JINA_BASE_URL = "https://r.jina.ai/"
+# 預設值（可被 config.json 覆蓋）
+_DEFAULTS = {
+    "output_dir": os.path.expanduser("~/vet-articles"),
+    "request_timeout": 30,
+    "max_retries": 3,
+    "retry_base_delay": 2,
+    "politeness_delay": 2,
+    "jina_base_url": "https://r.jina.ai/",
+    "log_level": "INFO",
+}
+
+
+def load_config(config_path: str = None) -> dict:
+    """載入設定檔，未找到則用預設值"""
+    config = dict(_DEFAULTS)
+    if config_path is None:
+        config_path = Path(__file__).parent / "config.json"
+    else:
+        config_path = Path(config_path)
+
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                user_config = json.load(f)
+            config.update(user_config)
+            # 展開 ~ 路徑
+            if "output_dir" in user_config:
+                config["output_dir"] = os.path.expanduser(config["output_dir"])
+        except (json.JSONDecodeError, TypeError):
+            pass  # 設定檔損壞時使用預設值
+
+    return config
+
+
+# 載入設定（模組層級，供各函式使用）
+_CONFIG = load_config()
+
+DEFAULT_OUTPUT_DIR = _CONFIG["output_dir"]
+REQUEST_TIMEOUT = _CONFIG["request_timeout"]
+JINA_BASE_URL = _CONFIG["jina_base_url"]
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "")  # 設定後可提升至 200 次/分鐘
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'}
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2  # 秒，指數退避基底
+MAX_RETRIES = _CONFIG["max_retries"]
+RETRY_BASE_DELAY = _CONFIG["retry_base_delay"]
+POLITENESS_DELAY = _CONFIG["politeness_delay"]
 DEDUP_FILE = ".fetched_urls.json"  # 已下載 URL 記錄檔
 
 HEADERS = {
@@ -56,12 +94,37 @@ HEADERS = {
     'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
 }
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
-)
 logger = logging.getLogger(__name__)
+
+
+def _setup_logging(log_dir: str = None, level: str = "INFO"):
+    """設定 console + file 雙輸出日誌"""
+    logger.setLevel(logging.DEBUG)
+
+    # 避免重複添加 handler
+    if logger.handlers:
+        return logger
+
+    # Console handler（保持原有行為）
+    console = logging.StreamHandler()
+    console.setLevel(getattr(logging, level.upper(), logging.INFO))
+    console.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', '%H:%M:%S'))
+    logger.addHandler(console)
+
+    # File handler（DEBUG 等級，按日期分檔）
+    if log_dir:
+        log_path = Path(log_dir) / "logs"
+        log_path.mkdir(parents=True, exist_ok=True)
+        log_file = log_path / f"scraper_{datetime.now().strftime('%Y%m%d')}.log"
+
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s [%(levelname)s] %(name)s - %(message)s'
+        ))
+        logger.addHandler(file_handler)
+
+    return logger
 
 
 # ============================================================
@@ -270,8 +333,66 @@ def _extract_title_from_jina(content: str) -> str:
 
 
 # ============================================================
-# 第三步：BeautifulSoup 策略（備選）
+# 第三步：HTML 解析（BS4 和 Playwright 共用）
 # ============================================================
+
+def _parse_html_to_article(html: str, url: str, source: str = "bs4") -> dict | None:
+    """將 HTML 解析為 article dict（BS4 和 Playwright 共用）"""
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # 移除不需要的元素
+    for tag in soup.find_all(['script', 'style', 'nav', 'footer',
+                               'header', 'aside', 'iframe', 'noscript']):
+        tag.decompose()
+
+    # 嘗試找到主要內容區域
+    article = (
+        soup.find('article') or
+        soup.find('div', class_=re.compile(r'article|content|post|entry', re.I)) or
+        soup.find('div', id=re.compile(r'article|content|post|entry', re.I)) or
+        soup.find('main') or
+        soup.body
+    )
+
+    if not article:
+        logger.warning(f"[{source}] 找不到主要內容")
+        return None
+
+    # 轉換成 Markdown
+    content = md(str(article), heading_style="ATX", strip=['img'])
+
+    # 提取圖片
+    images = []
+    for img in article.find_all('img'):
+        src = img.get('src') or img.get('data-src') or img.get('data-original')
+        if src:
+            full_url = urljoin(url, src)
+            images.append(full_url)
+
+    # 重建含圖片的 Markdown
+    for i, img_url in enumerate(images):
+        content += f"\n\n![圖片{i+1}]({img_url})"
+
+    # 提取標題
+    title = ""
+    title_tag = soup.find('title')
+    if title_tag:
+        title = title_tag.get_text(strip=True)
+    h1 = soup.find('h1')
+    if h1:
+        title = h1.get_text(strip=True)
+
+    if len(content.strip()) < 50:
+        logger.warning(f"[{source}] 內容太短")
+        return None
+
+    return {
+        "title": title or "未命名文章",
+        "content": content.strip(),
+        "source": source,
+        "url": url,
+    }
+
 
 def fetch_with_bs4(url: str) -> dict | None:
     """用 requests + BeautifulSoup 擷取網頁"""
@@ -279,65 +400,54 @@ def fetch_with_bs4(url: str) -> dict | None:
         logger.info(f"[BS4] 正在擷取：{url}")
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
-        resp.encoding = resp.apparent_encoding or 'utf-8'  # 自動偵測編碼，None 時回退 UTF-8
-
-        soup = BeautifulSoup(resp.text, 'html.parser')
-
-        # 移除不需要的元素
-        for tag in soup.find_all(['script', 'style', 'nav', 'footer',
-                                   'header', 'aside', 'iframe', 'noscript']):
-            tag.decompose()
-
-        # 嘗試找到主要內容區域
-        article = (
-            soup.find('article') or
-            soup.find('div', class_=re.compile(r'article|content|post|entry', re.I)) or
-            soup.find('div', id=re.compile(r'article|content|post|entry', re.I)) or
-            soup.find('main') or
-            soup.body
-        )
-
-        if not article:
-            logger.warning("[BS4] 找不到主要內容")
-            return None
-
-        # 轉換成 Markdown
-        content = md(str(article), heading_style="ATX", strip=['img'])
-
-        # 提取圖片
-        images = []
-        for img in article.find_all('img'):
-            src = img.get('src') or img.get('data-src') or img.get('data-original')
-            if src:
-                full_url = urljoin(url, src)
-                images.append(full_url)
-
-        # 重建含圖片的 Markdown
-        for i, img_url in enumerate(images):
-            content += f"\n\n![圖片{i+1}]({img_url})"
-
-        # 提取標題
-        title = ""
-        title_tag = soup.find('title')
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-        h1 = soup.find('h1')
-        if h1:
-            title = h1.get_text(strip=True)
-
-        if len(content.strip()) < 50:
-            logger.warning("[BS4] 內容太短")
-            return None
-
-        return {
-            "title": title or "未命名文章",
-            "content": content.strip(),
-            "source": "bs4",
-            "url": url,
-        }
+        resp.encoding = resp.apparent_encoding or 'utf-8'
+        return _parse_html_to_article(resp.text, url, source="bs4")
 
     except requests.exceptions.RequestException as e:
         logger.warning(f"[BS4] 擷取失敗：{e}")
+        return None
+
+
+# ============================================================
+# 第三步之二：Playwright 策略（兜底，處理 JS 渲染頁面）
+# ============================================================
+
+def fetch_with_playwright(url: str) -> dict | None:
+    """用 Playwright 無頭瀏覽器擷取 JS 渲染頁面"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        logger.warning("[Playwright] 未安裝 playwright，跳過此策略")
+        return None
+
+    try:
+        logger.info(f"[Playwright] 正在擷取：{url}")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=HEADERS['User-Agent'],
+                locale='zh-TW'
+            )
+
+            # PTT 需要 over18 cookie
+            parsed = urlparse(url)
+            if 'ptt.cc' in parsed.netloc:
+                context.add_cookies([{
+                    'name': 'over18',
+                    'value': '1',
+                    'domain': '.ptt.cc',
+                    'path': '/',
+                }])
+
+            page = context.new_page()
+            page.goto(url, timeout=30000, wait_until='networkidle')
+            html = page.content()
+            browser.close()
+
+        return _parse_html_to_article(html, url, source="playwright")
+
+    except Exception as e:
+        logger.warning(f"[Playwright] 擷取失敗：{e}")
         return None
 
 
@@ -348,7 +458,7 @@ def fetch_with_bs4(url: str) -> dict | None:
 def fetch_article(url: str) -> dict | None:
     """
     自動識別平台並用最佳策略擷取文章。
-    含 robots.txt 檢查、重試機制、降級順序：Jina → BS4
+    含 robots.txt 檢查、重試機制、降級順序：Jina → BS4 → Playwright
     """
     platform = identify_platform(url)
     logger.info(f"平台識別：{platform['name']} ({platform['domain']})")
@@ -367,10 +477,16 @@ def fetch_article(url: str) -> dict | None:
         return None
 
     # 根據建議策略決定嘗試順序
-    if platform["strategy"] == "bs4":
+    if platform["strategy"] == "playwright":
+        strategies = [("playwright", fetch_with_playwright), ("bs4", fetch_with_bs4)]
+    elif platform["strategy"] == "bs4":
         strategies = [("bs4", fetch_with_bs4), ("jina", fetch_with_jina)]
     else:
         strategies = [("jina", fetch_with_jina), ("bs4", fetch_with_bs4)]
+
+    # Playwright 作為所有策略的最終兜底
+    if ("playwright", fetch_with_playwright) not in strategies:
+        strategies.append(("playwright", fetch_with_playwright))
 
     for name, func in strategies:
         result = retry_fetch(func, url)
@@ -508,19 +624,12 @@ def _guess_extension(url: str) -> str:
 # 第六步：批次處理
 # ============================================================
 
-def batch_fetch(url_file: str, output_dir: str = DEFAULT_OUTPUT_DIR) -> dict:
+def batch_fetch_urls(urls: list, output_dir: str = DEFAULT_OUTPUT_DIR) -> dict:
     """
-    從檔案讀取 URL 列表，批次擷取。
-    URL 檔案格式：每行一個 URL，# 開頭為註解
+    處理 URL 列表的批次擷取。
+    供 batch_fetch()、fetch_ptt_board() 等共用。
     """
-    urls = []
-    with open(url_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                urls.append(line)
-
-    logger.info(f"📋 共 {len(urls)} 個 URL 待擷取")
+    logger.info(f"共 {len(urls)} 個 URL 待擷取")
 
     results = {"success": [], "failed": [], "skipped": []}
 
@@ -529,13 +638,13 @@ def batch_fetch(url_file: str, output_dir: str = DEFAULT_OUTPUT_DIR) -> dict:
 
         # 去重檢查
         if is_already_fetched(url, output_dir):
-            logger.info(f"⏭️  已下載過，跳過：{url}")
+            logger.info(f"已下載過，跳過：{url}")
             results["skipped"].append({"url": url, "reason": "已下載過"})
             continue
 
         platform = identify_platform(url)
         if platform["strategy"] == "skip":
-            logger.warning(f"⏭️  跳過 {platform['name']} 平台：{url}")
+            logger.warning(f"跳過 {platform['name']} 平台：{url}")
             results["skipped"].append({"url": url, "reason": f"{platform['name']} 需要登入"})
             continue
 
@@ -549,22 +658,134 @@ def batch_fetch(url_file: str, output_dir: str = DEFAULT_OUTPUT_DIR) -> dict:
 
         # 禮貌延遲，避免被封
         if i < len(urls):
-            time.sleep(2)
+            time.sleep(POLITENESS_DELAY)
 
     # 輸出統計
     logger.info(f"\n{'='*50}")
-    logger.info(f"📊 擷取完成！")
-    logger.info(f"   ✅ 成功：{len(results['success'])}")
-    logger.info(f"   ❌ 失敗：{len(results['failed'])}")
-    logger.info(f"   ⏭️  跳過：{len(results['skipped'])}")
+    logger.info(f"擷取完成！")
+    logger.info(f"   成功：{len(results['success'])}")
+    logger.info(f"   失敗：{len(results['failed'])}")
+    logger.info(f"   跳過：{len(results['skipped'])}")
 
     # 儲存報告
     report_path = Path(output_dir) / f"batch_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')
-    logger.info(f"   📄 報告：{report_path}")
+    logger.info(f"   報告：{report_path}")
 
     return results
+
+
+def batch_fetch(url_file: str, output_dir: str = DEFAULT_OUTPUT_DIR) -> dict:
+    """
+    從檔案讀取 URL 列表，批次擷取。
+    URL 檔案格式：每行一個 URL，# 開頭為註解
+    """
+    urls = []
+    with open(url_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                urls.append(line)
+
+    return batch_fetch_urls(urls, output_dir)
+
+
+# ============================================================
+# 第七步：PTT 看板列表頁爬取
+# ============================================================
+
+def fetch_ptt_board(board: str, pages: int = 1, output_dir: str = DEFAULT_OUTPUT_DIR) -> list:
+    """
+    從 PTT 看板列表頁提取文章 URL，支援翻頁。
+
+    Args:
+        board: 看板名稱（如 'cat', 'dog', 'Vet'）
+        pages: 要爬取的頁數（從最新頁往回）
+        output_dir: 輸出目錄（用於去重檢查）
+    Returns:
+        去重後的文章 URL 列表
+    """
+    base_url = f"https://www.ptt.cc/bbs/{board}/index.html"
+    cookies = {'over18': '1'}
+    collected_urls = []
+    current_url = base_url
+
+    for page_num in range(pages):
+        logger.info(f"[PTT] 正在讀取看板 {board} 第 {page_num + 1}/{pages} 頁...")
+        try:
+            resp = requests.get(current_url, headers=HEADERS, cookies=cookies,
+                                timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"[PTT] 看板頁面讀取失敗：{e}")
+            break
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
+        # 提取文章連結
+        for entry in soup.select('div.r-ent'):
+            link = entry.select_one('div.title a')
+            if link and link.get('href'):
+                full_url = urljoin('https://www.ptt.cc', link['href'])
+                if not is_already_fetched(full_url, output_dir):
+                    collected_urls.append(full_url)
+
+        # 找上一頁連結
+        prev_link = None
+        for btn in soup.select('div.btn-group-paging a.btn.wide'):
+            if '上頁' in btn.text:
+                prev_link = urljoin('https://www.ptt.cc', btn['href'])
+                break
+
+        if not prev_link or page_num >= pages - 1:
+            break
+        current_url = prev_link
+        time.sleep(1)  # 禮貌延遲
+
+    logger.info(f"[PTT] 從 {board} 看板取得 {len(collected_urls)} 篇新文章 URL")
+    return collected_urls
+
+
+# ============================================================
+# 第八步：排程自動執行
+# ============================================================
+
+def run_scheduled(args):
+    """排程模式：定期自動執行爬蟲任務"""
+    try:
+        import schedule
+    except ImportError:
+        logger.error("排程模式需要 schedule 套件：pip install schedule")
+        sys.exit(1)
+
+    def job():
+        logger.info("[排程] 開始執行定時任務...")
+        if args.ptt_board:
+            urls = fetch_ptt_board(args.ptt_board, args.pages, args.output)
+            if urls:
+                batch_fetch_urls(urls, args.output)
+            else:
+                logger.info("[排程] 沒有新文章")
+        elif args.batch:
+            batch_fetch(args.batch, args.output)
+        else:
+            logger.warning("[排程] 排程模式需搭配 --ptt-board 或 --batch 使用")
+            return
+        logger.info("[排程] 任務完成，等待下次執行...")
+
+    interval = args.schedule
+    schedule.every(interval).minutes.do(job)
+
+    logger.info(f"[排程] 已啟動，每 {interval} 分鐘執行一次（Ctrl+C 停止）")
+    job()  # 立即執行第一次
+
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(10)
+    except KeyboardInterrupt:
+        logger.info("[排程] 已停止")
 
 
 # ============================================================
@@ -572,6 +793,9 @@ def batch_fetch(url_file: str, output_dir: str = DEFAULT_OUTPUT_DIR) -> dict:
 # ============================================================
 
 def main():
+    global _CONFIG, DEFAULT_OUTPUT_DIR, REQUEST_TIMEOUT, MAX_RETRIES
+    global RETRY_BASE_DELAY, POLITENESS_DELAY, JINA_BASE_URL
+
     parser = argparse.ArgumentParser(
         description="🐾 獸醫文章自動化擷取工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -588,6 +812,12 @@ def main():
 
   # 只識別平台（不擷取）
   python scraper.py https://facebook.com/some-post --identify
+
+  # PTT 看板自動爬取（最新 3 頁）
+  python scraper.py --ptt-board cat --pages 3
+
+  # 排程模式（每 60 分鐘自動執行）
+  python scraper.py --ptt-board cat --pages 2 --schedule 60
         """
     )
     parser.add_argument("url", nargs="?", help="要擷取的網頁 URL")
@@ -596,10 +826,32 @@ def main():
                         help=f"輸出目錄（預設：{DEFAULT_OUTPUT_DIR}）")
     parser.add_argument("--identify", "-i", action="store_true",
                         help="只識別平台，不擷取內容")
+    parser.add_argument("--config", "-c", default=None,
+                        help="設定檔路徑（預設：同目錄下的 config.json）")
+    parser.add_argument("--ptt-board", help="PTT 看板名稱（自動爬取文章列表）")
+    parser.add_argument("--pages", type=int, default=1,
+                        help="PTT 看板頁數（預設：1）")
+    parser.add_argument("--schedule", type=int, metavar="MINUTES",
+                        help="排程模式：每隔 N 分鐘自動執行")
 
     args = parser.parse_args()
 
-    if not args.url and not args.batch:
+    # 重新載入設定（如有指定 --config）
+    if args.config:
+        _CONFIG = load_config(args.config)
+        DEFAULT_OUTPUT_DIR = _CONFIG["output_dir"]
+        REQUEST_TIMEOUT = _CONFIG["request_timeout"]
+        MAX_RETRIES = _CONFIG["max_retries"]
+        RETRY_BASE_DELAY = _CONFIG["retry_base_delay"]
+        POLITENESS_DELAY = _CONFIG["politeness_delay"]
+        JINA_BASE_URL = _CONFIG["jina_base_url"]
+        if args.output == os.path.expanduser("~/vet-articles"):
+            args.output = DEFAULT_OUTPUT_DIR
+
+    # 初始化日誌（console + file）
+    _setup_logging(log_dir=args.output, level=_CONFIG.get("log_level", "INFO"))
+
+    if not args.url and not args.batch and not args.ptt_board:
         parser.print_help()
         sys.exit(1)
 
@@ -607,6 +859,20 @@ def main():
     if args.identify and args.url:
         info = identify_platform(args.url)
         print(json.dumps(info, ensure_ascii=False, indent=2))
+        return
+
+    # 排程模式
+    if args.schedule:
+        run_scheduled(args)
+        return
+
+    # PTT 看板模式
+    if args.ptt_board:
+        urls = fetch_ptt_board(args.ptt_board, args.pages, args.output)
+        if urls:
+            batch_fetch_urls(urls, args.output)
+        else:
+            logger.info("沒有新文章需要擷取")
         return
 
     # 批次模式

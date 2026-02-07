@@ -6,3 +6,6 @@ extracted/
 .claude/
 .fetched_urls.json
 ~/vet-articles/
+
+# GUI
+*.log

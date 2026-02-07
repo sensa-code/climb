@@ -328,11 +328,12 @@ class TestFetchArticle:
     def test_fallback_to_bs4(self):
         mock_result = {"title": "Test", "content": "x" * 200, "source": "bs4", "url": "https://example.com"}
         with patch("scraper.is_allowed_by_robots", return_value=True), \
-             patch("scraper.retry_fetch", side_effect=[None, mock_result]):
+             patch("scraper.retry_fetch", side_effect=[None, mock_result, None]):
             result = scraper.fetch_article("https://example.com/page")
         assert result is not None
 
     def test_all_strategies_fail(self):
+        """三層策略（Jina + BS4 + Playwright）都失敗"""
         with patch("scraper.is_allowed_by_robots", return_value=True), \
              patch("scraper.retry_fetch", return_value=None):
             result = scraper.fetch_article("https://example.com/page")
@@ -472,3 +473,300 @@ class TestBatchFetch:
              patch("time.sleep"):
             results = scraper.batch_fetch(str(url_file), str(tmp_path))
         assert len(results["success"]) == 1
+
+
+# ============================================================
+# load_config
+# ============================================================
+
+class TestLoadConfig:
+    def test_defaults_when_no_file(self, tmp_path):
+        config = scraper.load_config(str(tmp_path / "nonexistent.json"))
+        assert config["request_timeout"] == 30
+        assert config["max_retries"] == 3
+        assert config["retry_base_delay"] == 2
+        assert config["politeness_delay"] == 2
+
+    def test_custom_values(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "request_timeout": 60,
+            "max_retries": 5,
+        }), encoding="utf-8")
+        config = scraper.load_config(str(cfg_file))
+        assert config["request_timeout"] == 60
+        assert config["max_retries"] == 5
+        assert config["retry_base_delay"] == 2  # 未覆蓋的保持預設
+
+    def test_corrupted_file_uses_defaults(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text("NOT VALID JSON", encoding="utf-8")
+        config = scraper.load_config(str(cfg_file))
+        assert config["request_timeout"] == 30
+
+    def test_output_dir_expansion(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "output_dir": "~/custom-output",
+        }), encoding="utf-8")
+        config = scraper.load_config(str(cfg_file))
+        assert "~" not in config["output_dir"]
+
+
+# ============================================================
+# _setup_logging
+# ============================================================
+
+class TestSetupLogging:
+    def test_creates_log_file(self, tmp_path):
+        # 先清除現有 handlers
+        scraper.logger.handlers.clear()
+        scraper._setup_logging(log_dir=str(tmp_path))
+        scraper.logger.info("test message")
+
+        log_dir = tmp_path / "logs"
+        assert log_dir.exists()
+        log_files = list(log_dir.glob("scraper_*.log"))
+        assert len(log_files) >= 1
+
+        # 清理 handlers 避免影響其他測試
+        scraper.logger.handlers.clear()
+
+    def test_no_file_handler_without_dir(self):
+        scraper.logger.handlers.clear()
+        scraper._setup_logging(log_dir=None)
+        file_handlers = [h for h in scraper.logger.handlers
+                         if isinstance(h, scraper.logging.FileHandler)]
+        assert len(file_handlers) == 0
+        scraper.logger.handlers.clear()
+
+    def test_no_duplicate_handlers(self, tmp_path):
+        scraper.logger.handlers.clear()
+        scraper._setup_logging(log_dir=str(tmp_path))
+        count_before = len(scraper.logger.handlers)
+        scraper._setup_logging(log_dir=str(tmp_path))
+        assert len(scraper.logger.handlers) == count_before
+        scraper.logger.handlers.clear()
+
+
+# ============================================================
+# _parse_html_to_article（共用解析）
+# ============================================================
+
+class TestParseHtmlToArticle:
+    def test_basic_article(self):
+        html = '<html><head><title>Test</title></head><body><article><p>This is a long enough article content for testing purposes and validation checks.</p></article></body></html>'
+        result = scraper._parse_html_to_article(html, "https://example.com")
+        assert result is not None
+        assert result["source"] == "bs4"
+
+    def test_custom_source(self):
+        html = '<html><head><title>Test</title></head><body><article><p>This is a long enough article content for testing purposes and validation checks.</p></article></body></html>'
+        result = scraper._parse_html_to_article(html, "https://example.com", source="playwright")
+        assert result is not None
+        assert result["source"] == "playwright"
+
+    def test_extracts_images(self):
+        html = '<html><body><article><p>Content long enough for validation testing purposes.</p><img src="/img/photo.jpg"><img data-src="https://cdn.example.com/pic.png"></article></body></html>'
+        result = scraper._parse_html_to_article(html, "https://example.com")
+        assert result is not None
+        assert "example.com/img/photo.jpg" in result["content"]
+
+    def test_strips_script_tags(self):
+        html = '<html><body><article><script>alert("xss")</script><p>Clean content that is long enough for the validation threshold check.</p></article></body></html>'
+        result = scraper._parse_html_to_article(html, "https://example.com")
+        assert result is not None
+        assert "alert" not in result["content"]
+
+    def test_content_too_short(self):
+        html = "<html><body><article><p>Hi</p></article></body></html>"
+        result = scraper._parse_html_to_article(html, "https://example.com")
+        assert result is None
+
+    def test_no_content_area(self):
+        html = "<html><body></body></html>"
+        result = scraper._parse_html_to_article(html, "https://example.com")
+        assert result is None
+
+
+# ============================================================
+# Playwright 策略
+# ============================================================
+
+class TestFetchWithPlaywright:
+    def test_import_error_graceful(self):
+        """未安裝 playwright 時優雅降級"""
+        with patch.dict("sys.modules", {"playwright": None, "playwright.sync_api": None}):
+            # Force reimport failure
+            import importlib
+            with patch("builtins.__import__", side_effect=ImportError("No module named 'playwright'")):
+                result = scraper.fetch_with_playwright("https://example.com")
+        assert result is None
+
+    def test_success_with_mock(self):
+        html = '<html><head><title>PW Test</title></head><body><article><p>Playwright rendered content that is long enough for the validation threshold.</p></article></body></html>'
+
+        mock_page = MagicMock()
+        mock_page.content.return_value = html
+        mock_context = MagicMock()
+        mock_context.new_page.return_value = mock_page
+        mock_browser = MagicMock()
+        mock_browser.new_context.return_value = mock_context
+        mock_playwright = MagicMock()
+        mock_playwright.chromium.launch.return_value = mock_browser
+
+        mock_cm = MagicMock()
+        mock_cm.__enter__ = MagicMock(return_value=mock_playwright)
+        mock_cm.__exit__ = MagicMock(return_value=False)
+
+        mock_sync_pw = MagicMock(return_value=mock_cm)
+
+        with patch.dict("sys.modules", {"playwright": MagicMock(), "playwright.sync_api": MagicMock(sync_playwright=mock_sync_pw)}):
+            with patch("scraper._parse_html_to_article") as mock_parse:
+                mock_parse.return_value = {"title": "PW Test", "content": "ok", "source": "playwright", "url": "https://example.com"}
+                # We need to mock the import inside the function
+                import types
+                mock_module = types.ModuleType("playwright.sync_api")
+                mock_module.sync_playwright = mock_sync_pw
+                with patch.dict("sys.modules", {"playwright.sync_api": mock_module}):
+                    result = scraper.fetch_with_playwright("https://example.com")
+        assert result is not None
+
+    def test_ptt_gets_over18_cookie(self):
+        """PTT 網址應自動添加 over18 cookie"""
+        mock_page = MagicMock()
+        mock_page.content.return_value = '<html><body><article><p>PTT content here</p></article></body></html>'
+        mock_context = MagicMock()
+        mock_context.new_page.return_value = mock_page
+        mock_browser = MagicMock()
+        mock_browser.new_context.return_value = mock_context
+        mock_pw = MagicMock()
+        mock_pw.chromium.launch.return_value = mock_browser
+
+        mock_cm = MagicMock()
+        mock_cm.__enter__ = MagicMock(return_value=mock_pw)
+        mock_cm.__exit__ = MagicMock(return_value=False)
+        mock_sync = MagicMock(return_value=mock_cm)
+
+        import types
+        mock_module = types.ModuleType("playwright.sync_api")
+        mock_module.sync_playwright = mock_sync
+        with patch.dict("sys.modules", {"playwright.sync_api": mock_module}):
+            scraper.fetch_with_playwright("https://www.ptt.cc/bbs/cat/M.123.html")
+        mock_context.add_cookies.assert_called_once()
+
+
+# ============================================================
+# PTT 看板爬取
+# ============================================================
+
+class TestFetchPttBoard:
+    PTT_BOARD_HTML = """
+    <html><body>
+    <div class="r-ent"><div class="title"><a href="/bbs/cat/M.111.A.222.html">Article 1</a></div></div>
+    <div class="r-ent"><div class="title"><a href="/bbs/cat/M.333.A.444.html">Article 2</a></div></div>
+    <div class="r-ent"><div class="title">(本文已被刪除)</div></div>
+    <div class="btn-group-paging">
+        <a class="btn wide" href="/bbs/cat/index99.html">&#x2190; 上頁</a>
+    </div>
+    </body></html>
+    """
+
+    def _mock_response(self, html):
+        resp = MagicMock()
+        resp.text = html
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def test_extracts_article_urls(self, tmp_path):
+        with patch("requests.get", return_value=self._mock_response(self.PTT_BOARD_HTML)), \
+             patch("time.sleep"):
+            urls = scraper.fetch_ptt_board("cat", pages=1, output_dir=str(tmp_path))
+        assert len(urls) == 2
+        assert "https://www.ptt.cc/bbs/cat/M.111.A.222.html" in urls
+
+    def test_skips_deleted_posts(self, tmp_path):
+        with patch("requests.get", return_value=self._mock_response(self.PTT_BOARD_HTML)), \
+             patch("time.sleep"):
+            urls = scraper.fetch_ptt_board("cat", pages=1, output_dir=str(tmp_path))
+        # 刪除的文章沒有 <a> 標籤，不應被提取
+        assert len(urls) == 2
+
+    def test_dedup_filtering(self, tmp_path):
+        scraper.mark_as_fetched("https://www.ptt.cc/bbs/cat/M.111.A.222.html", str(tmp_path))
+        with patch("requests.get", return_value=self._mock_response(self.PTT_BOARD_HTML)), \
+             patch("time.sleep"):
+            urls = scraper.fetch_ptt_board("cat", pages=1, output_dir=str(tmp_path))
+        assert len(urls) == 1
+        assert "M.333.A.444.html" in urls[0]
+
+    def test_pagination(self, tmp_path):
+        page2_html = """
+        <html><body>
+        <div class="r-ent"><div class="title"><a href="/bbs/cat/M.555.A.666.html">Article 3</a></div></div>
+        </body></html>
+        """
+        with patch("requests.get", side_effect=[
+            self._mock_response(self.PTT_BOARD_HTML),
+            self._mock_response(page2_html),
+        ]), patch("time.sleep"):
+            urls = scraper.fetch_ptt_board("cat", pages=2, output_dir=str(tmp_path))
+        assert len(urls) == 3
+
+    def test_network_error(self, tmp_path):
+        import requests as req
+        with patch("requests.get", side_effect=req.exceptions.ConnectionError("timeout")):
+            urls = scraper.fetch_ptt_board("cat", pages=1, output_dir=str(tmp_path))
+        assert urls == []
+
+
+# ============================================================
+# batch_fetch_urls
+# ============================================================
+
+class TestBatchFetchUrls:
+    def test_processes_url_list(self, tmp_path):
+        urls = ["https://example.com/1", "https://example.com/2"]
+        mock_article = {"title": "T", "content": "C", "source": "bs4", "url": "", "platform": "其他"}
+        with patch("scraper.fetch_article", return_value=mock_article), \
+             patch("scraper.save_article", return_value=tmp_path / "out"), \
+             patch("time.sleep"):
+            results = scraper.batch_fetch_urls(urls, str(tmp_path))
+        assert len(results["success"]) == 2
+
+    def test_skips_already_fetched(self, tmp_path):
+        scraper.mark_as_fetched("https://example.com/1", str(tmp_path))
+        with patch("time.sleep"):
+            results = scraper.batch_fetch_urls(["https://example.com/1"], str(tmp_path))
+        assert len(results["skipped"]) == 1
+
+    def test_empty_list(self, tmp_path):
+        results = scraper.batch_fetch_urls([], str(tmp_path))
+        assert len(results["success"]) == 0
+
+    def test_saves_report(self, tmp_path):
+        with patch("scraper.fetch_article", return_value=None), \
+             patch("time.sleep"):
+            scraper.batch_fetch_urls(["https://example.com/1"], str(tmp_path))
+        reports = list(tmp_path.glob("batch_report_*.json"))
+        assert len(reports) == 1
+
+
+# ============================================================
+# run_scheduled
+# ============================================================
+
+class TestRunScheduled:
+    def test_requires_schedule_package(self):
+        """未安裝 schedule 時應報錯"""
+        args = MagicMock()
+        args.schedule = 60
+        args.ptt_board = "cat"
+        args.pages = 1
+        args.batch = None
+        args.output = "/tmp/test"
+
+        with patch.dict("sys.modules", {"schedule": None}), \
+             patch("builtins.__import__", side_effect=ImportError("No module named 'schedule'")), \
+             pytest.raises(SystemExit):
+            scraper.run_scheduled(args)
