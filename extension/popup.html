@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLIMB Article Saver</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- 標題列 -->
+    <div class="header">
+      <h1>CLIMB</h1>
+      <span class="subtitle">獸醫文章擷取工具</span>
+    </div>
+
+    <!-- 伺服器狀態 -->
+    <div class="status-bar" id="statusBar">
+      <span class="status-dot" id="statusDot"></span>
+      <span class="status-text" id="statusText">檢查連線中...</span>
+    </div>
+
+    <!-- 主要按鈕 -->
+    <button class="save-btn" id="saveBtn" disabled>
+      儲存此頁面
+    </button>
+
+    <!-- 結果區 -->
+    <div class="result" id="resultArea" style="display: none;">
+      <div class="result-icon" id="resultIcon"></div>
+      <div class="result-text" id="resultText"></div>
+    </div>
+
+    <!-- 頁面資訊 -->
+    <div class="page-info" id="pageInfo">
+      <div class="info-row">
+        <span class="info-label">平台：</span>
+        <span class="info-value" id="platformName">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">標題：</span>
+        <span class="info-value" id="pageTitle">—</span>
+      </div>
+    </div>
+
+    <!-- 底部提示 -->
+    <div class="footer">
+      <span class="hint" id="hintText">請先在 CLIMB GUI 啟動 Extension Server</span>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

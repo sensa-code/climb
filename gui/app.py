@@ -76,6 +76,7 @@ class ClimbApp(ctk.CTk):
         from gui.tabs.single_fetch import SingleFetchTab
         from gui.tabs.batch_fetch import BatchFetchTab
         from gui.tabs.ptt_board import PttBoardTab
+        from gui.tabs.extension_tab import ExtensionTab
         from gui.tabs.settings import SettingsTab
         from gui.tabs.article_browser import ArticleBrowserTab
         from gui.tabs.log_viewer import LogViewerTab
@@ -84,6 +85,7 @@ class ClimbApp(ctk.CTk):
             ("單篇擷取", SingleFetchTab),
             ("批次擷取", BatchFetchTab),
             ("PTT 看板", PttBoardTab),
+            ("Extension", ExtensionTab),
             ("設定", SettingsTab),
             ("文章瀏覽", ArticleBrowserTab),
             ("日誌", LogViewerTab),
@@ -145,6 +147,11 @@ class ClimbApp(ctk.CTk):
 
     def _on_close(self):
         """視窗關閉事件"""
+        # 停止 Extension API Server
+        ext_tab = self._tabs.get("Extension")
+        if ext_tab and hasattr(ext_tab, "shutdown"):
+            ext_tab.shutdown()
+
         self.task_runner.shutdown()
         scraper.logger.removeHandler(self._gui_log_handler)
         self.destroy()

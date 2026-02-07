@@ -1,0 +1,161 @@
+/* CLIMB Extension Popup Styles */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 320px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.container {
+  padding: 16px;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #4fc3f7;
+  letter-spacing: 1px;
+}
+
+.subtitle {
+  font-size: 11px;
+  color: #888;
+}
+
+/* Status Bar */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #16213e;
+  margin-bottom: 12px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff5252;
+  flex-shrink: 0;
+}
+
+.status-dot.connected {
+  background: #69f0ae;
+}
+
+.status-text {
+  font-size: 12px;
+  color: #b0b0b0;
+}
+
+/* Save Button */
+.save-btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  background: #1565c0;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+  margin-bottom: 12px;
+}
+
+.save-btn:hover:not(:disabled) {
+  background: #1976d2;
+}
+
+.save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.save-btn.saving {
+  background: #ff8f00;
+}
+
+/* Result Area */
+.result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.result.success {
+  background: #1b5e20;
+  color: #c8e6c9;
+}
+
+.result.error {
+  background: #b71c1c;
+  color: #ffcdd2;
+}
+
+.result-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.result-text {
+  word-break: break-word;
+}
+
+/* Page Info */
+.page-info {
+  padding: 8px 0;
+  border-top: 1px solid #2a2a4a;
+}
+
+.info-row {
+  display: flex;
+  gap: 4px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.info-label {
+  color: #888;
+  flex-shrink: 0;
+}
+
+.info-value {
+  color: #b0b0b0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Footer */
+.footer {
+  margin-top: 8px;
+  text-align: center;
+}
+
+.hint {
+  font-size: 10px;
+  color: #666;
+}

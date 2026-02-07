@@ -5,5 +5,7 @@
   "retry_base_delay": 2,
   "politeness_delay": 2,
   "jina_base_url": "https://r.jina.ai/",
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "extension_server_port": 3456,
+  "extension_server_auto_start": false
 }
