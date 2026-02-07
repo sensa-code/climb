@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.zip
+.pytest_cache/
+extracted/
+.claude/
+.fetched_urls.json
+~/vet-articles/

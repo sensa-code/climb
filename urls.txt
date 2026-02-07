@@ -1,0 +1,32 @@
+# ===========================================
+# 獸醫文章 URL 收集清單
+# ===========================================
+# 每行一個 URL，# 開頭為註解
+# 可依分類整理，方便管理
+#
+# 使用方式：
+#   python scraper.py --batch urls.txt
+#
+
+# --- PTT 獸醫/寵物相關看板 ---
+# https://www.ptt.cc/bbs/dog/M.xxxxxxx.html
+# https://www.ptt.cc/bbs/cat/M.xxxxxxx.html
+# https://www.ptt.cc/bbs/AnimalPark/M.xxxxxxx.html
+
+# --- Medium 獸醫文章 ---
+# https://medium.com/@some-vet-author/article-title
+
+# --- 新聞網站 ---
+# https://udn.com/news/story/xxxxx
+# https://news.ltn.com.tw/news/life/xxxxx
+# https://www.ettoday.net/news/xxxxxxxx/xxxxx.htm
+
+# --- 獸醫學會 / 專業網站 ---
+# https://www.vetmed.org.tw/article/xxxxx
+
+# --- 部落格 ---
+# https://some-vet-blog.blogspot.com/2024/xx/post-title.html
+
+# --- ⚠️ 以下平台會被自動跳過（建議用 Chrome Extension）---
+# https://www.facebook.com/some-vet-page/posts/xxxxx
+# https://www.instagram.com/p/xxxxx
