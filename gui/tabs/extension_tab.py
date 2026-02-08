@@ -232,11 +232,8 @@ class ExtensionTab:
         self.app.config["extension_server_port"] = port
 
         # 寫入 config.json
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "..", "config.json",
-        )
-        config_path = os.path.normpath(config_path)
+        import paths
+        config_path = str(paths.get_config_path())
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = __import__("json").load(f)
@@ -270,10 +267,8 @@ class ExtensionTab:
 
     def _get_extension_path(self) -> str:
         """取得 Extension 資料夾路徑"""
-        project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
-        return os.path.join(project_root, "extension")
+        import paths
+        return str(paths.get_extension_dir())
 
     def _copy_extension_path(self):
         """複製 Extension 路徑到剪貼簿"""

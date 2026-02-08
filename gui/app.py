@@ -13,7 +13,8 @@ import logging
 import customtkinter as ctk
 
 # 確保 scraper.py 所在目錄在 sys.path 中
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import paths
+_PROJECT_ROOT = str(paths.get_bundle_dir())
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 

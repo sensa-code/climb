@@ -9,8 +9,9 @@ import customtkinter as ctk
 from gui.theme import FONT_NORMAL, FONT_SMALL, PLATFORM_COLORS, PAD_INNER
 
 # 確保 scraper 可用
-import sys, os
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys
+import paths
+_PROJECT_ROOT = str(paths.get_bundle_dir())
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 import scraper

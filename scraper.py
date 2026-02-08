@@ -58,7 +58,8 @@ def load_config(config_path: str = None) -> dict:
     """載入設定檔，未找到則用預設值"""
     config = dict(_DEFAULTS)
     if config_path is None:
-        config_path = Path(__file__).parent / "config.json"
+        import paths
+        config_path = paths.get_config_path()
     else:
         config_path = Path(config_path)
 

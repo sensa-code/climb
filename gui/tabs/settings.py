@@ -251,9 +251,8 @@ class SettingsTab:
                     raise ValueError(f"{key} 不能為負數")
 
             # 寫入 config.json
-            config_path = os.path.join(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__))), "..", "config.json")
-            config_path = os.path.normpath(config_path)
+            import paths
+            config_path = str(paths.get_config_path())
 
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(new_config, f, ensure_ascii=False, indent=2)

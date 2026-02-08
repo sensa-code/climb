@@ -9,3 +9,9 @@ extracted/
 
 # GUI
 *.log
+nul
+
+# PyInstaller
+dist/
+build/
+*.spec.bak
