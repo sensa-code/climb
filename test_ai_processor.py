@@ -67,6 +67,33 @@ Article body here."""
         assert fm["category"] == ""
         assert fm["summary"] == ""
 
+    def test_multiline_value(self):
+        """PyYAML 可以解析多行值"""
+        content = '---\ntitle: Test\nsummary: |-\n  第一行\n  第二行\n---\nBody'
+        fm, body = ai_processor.parse_frontmatter(content)
+        assert fm["title"] == "Test"
+        assert "第一行" in fm["summary"]
+        assert "第二行" in fm["summary"]
+
+    def test_special_chars_roundtrip(self):
+        """特殊字元經過讀寫後保持一致"""
+        original = '---\ntitle: "文章: 含冒號的標題"\nsource: "https://example.com/path?q=1&b=2"\n---\nBody'
+        fm, body = ai_processor.parse_frontmatter(original)
+        assert fm["title"] == "文章: 含冒號的標題"
+        assert fm["source"] == "https://example.com/path?q=1&b=2"
+
+        # roundtrip
+        updated = ai_processor.update_frontmatter(original, {})
+        fm2, _ = ai_processor.parse_frontmatter(updated)
+        assert fm2["title"] == fm["title"]
+        assert fm2["source"] == fm["source"]
+
+    def test_nested_list_values(self):
+        """PyYAML 正確處理列表值"""
+        content = '---\ntags:\n  - CKD\n  - 貓\n  - 老年\n---\nBody'
+        fm, body = ai_processor.parse_frontmatter(content)
+        assert fm["tags"] == ["CKD", "貓", "老年"]
+
 
 # ============================================================
 # Frontmatter 更新
@@ -105,7 +132,8 @@ class TestUpdateFrontmatter:
         fm, _ = ai_processor.parse_frontmatter(updated)
         assert fm["title"] == "Test"
         assert fm["platform"] == "Medium"
-        assert fm["date"] == "2024-01-01"
+        # PyYAML 會將 2024-01-01 解析為 datetime.date 物件
+        assert str(fm["date"]) == "2024-01-01"
         assert fm["summary"] == "A test summary"
 
     def test_no_existing_frontmatter(self):
@@ -291,15 +319,32 @@ class TestProcessSingleArticle:
         assert len(result["summary"]) > 0
 
     def test_api_error(self):
-        """API 錯誤拋出 RuntimeError"""
+        """不可重試的 API 錯誤拋出 RuntimeError"""
+        import anthropic as real_anthropic
+
         mock_client = MagicMock()
-        mock_client.messages.create.side_effect = Exception("API Error")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.headers = {}
+        bad_request = real_anthropic.BadRequestError(
+            message="Bad request",
+            response=mock_resp,
+            body={"error": {"message": "Bad request"}},
+        )
+        mock_client.messages.create.side_effect = bad_request
 
         with patch.object(ai_processor, "HAS_ANTHROPIC", True):
             with patch("ai_processor.anthropic") as mock_anthropic:
+                mock_anthropic.APIConnectionError = real_anthropic.APIConnectionError
+                mock_anthropic.APITimeoutError = real_anthropic.APITimeoutError
+                mock_anthropic.RateLimitError = real_anthropic.RateLimitError
+                mock_anthropic.InternalServerError = real_anthropic.InternalServerError
+                mock_anthropic.AuthenticationError = real_anthropic.AuthenticationError
+                mock_anthropic.BadRequestError = real_anthropic.BadRequestError
+                mock_anthropic.APIStatusError = real_anthropic.APIStatusError
+                mock_anthropic.APIError = real_anthropic.APIError
                 mock_anthropic.Anthropic.return_value = mock_client
-                mock_anthropic.APIError = Exception
-                with pytest.raises(RuntimeError):
+                with pytest.raises(RuntimeError, match="不可重試"):
                     ai_processor.process_single_article("text", "fake-key")
 
     def test_invalid_json_response(self):
@@ -357,6 +402,150 @@ class TestProcessSingleArticle:
                 mock_anthropic.Anthropic.return_value = mock_client
                 with pytest.raises(RuntimeError, match="缺少"):
                     ai_processor.process_single_article("text", "fake-key")
+
+    def test_retry_on_connection_error(self):
+        """連線錯誤自動重試，第 3 次成功"""
+        import anthropic as real_anthropic
+
+        good_response = MagicMock()
+        good_response.content = [MagicMock(
+            text=json.dumps({
+                "category": "內科", "subcategory": "腎臟",
+                "tags": ["CKD"], "summary": "Test summary",
+                "key_points": ["P1"], "clinical_relevance": "重要",
+            })
+        )]
+
+        mock_client = MagicMock()
+        conn_error = real_anthropic.APIConnectionError(request=MagicMock())
+        mock_client.messages.create.side_effect = [
+            conn_error, conn_error, good_response,
+        ]
+
+        with patch.object(ai_processor, "HAS_ANTHROPIC", True):
+            with patch("ai_processor.anthropic") as mock_anthropic:
+                # 讓 isinstance 檢查生效
+                mock_anthropic.APIConnectionError = real_anthropic.APIConnectionError
+                mock_anthropic.APITimeoutError = real_anthropic.APITimeoutError
+                mock_anthropic.RateLimitError = real_anthropic.RateLimitError
+                mock_anthropic.InternalServerError = real_anthropic.InternalServerError
+                mock_anthropic.AuthenticationError = real_anthropic.AuthenticationError
+                mock_anthropic.BadRequestError = real_anthropic.BadRequestError
+                mock_anthropic.APIStatusError = real_anthropic.APIStatusError
+                mock_anthropic.APIError = real_anthropic.APIError
+                mock_anthropic.Anthropic.return_value = mock_client
+                with patch("ai_processor.time.sleep"):  # 跳過延遲
+                    result = ai_processor.process_single_article(
+                        "text", "fake-key",
+                    )
+
+        assert result["category"] == "內科"
+        assert mock_client.messages.create.call_count == 3
+
+    def test_no_retry_on_auth_error(self):
+        """401 認證錯誤不重試，直接失敗"""
+        import anthropic as real_anthropic
+
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.headers = {}
+        auth_error = real_anthropic.AuthenticationError(
+            message="Invalid API Key",
+            response=mock_resp,
+            body={"error": {"message": "Invalid API Key"}},
+        )
+        mock_client.messages.create.side_effect = auth_error
+
+        with patch.object(ai_processor, "HAS_ANTHROPIC", True):
+            with patch("ai_processor.anthropic") as mock_anthropic:
+                mock_anthropic.APIConnectionError = real_anthropic.APIConnectionError
+                mock_anthropic.APITimeoutError = real_anthropic.APITimeoutError
+                mock_anthropic.RateLimitError = real_anthropic.RateLimitError
+                mock_anthropic.InternalServerError = real_anthropic.InternalServerError
+                mock_anthropic.AuthenticationError = real_anthropic.AuthenticationError
+                mock_anthropic.BadRequestError = real_anthropic.BadRequestError
+                mock_anthropic.APIStatusError = real_anthropic.APIStatusError
+                mock_anthropic.APIError = real_anthropic.APIError
+                mock_anthropic.Anthropic.return_value = mock_client
+                with pytest.raises(RuntimeError, match="不可重試"):
+                    ai_processor.process_single_article("text", "fake-key")
+
+        # 只呼叫一次，沒有重試
+        assert mock_client.messages.create.call_count == 1
+
+    def test_retry_on_rate_limit(self):
+        """429 rate limit 使用更長延遲重試"""
+        import anthropic as real_anthropic
+
+        good_response = MagicMock()
+        good_response.content = [MagicMock(
+            text=json.dumps({
+                "category": "其他", "subcategory": "",
+                "tags": ["test"], "summary": "OK",
+                "key_points": [], "clinical_relevance": "",
+            })
+        )]
+
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+        mock_resp.headers = {}
+        rate_error = real_anthropic.RateLimitError(
+            message="Rate limit exceeded",
+            response=mock_resp,
+            body={"error": {"message": "Rate limit exceeded"}},
+        )
+        mock_client.messages.create.side_effect = [
+            rate_error, good_response,
+        ]
+
+        sleep_calls = []
+
+        with patch.object(ai_processor, "HAS_ANTHROPIC", True):
+            with patch("ai_processor.anthropic") as mock_anthropic:
+                mock_anthropic.APIConnectionError = real_anthropic.APIConnectionError
+                mock_anthropic.APITimeoutError = real_anthropic.APITimeoutError
+                mock_anthropic.RateLimitError = real_anthropic.RateLimitError
+                mock_anthropic.InternalServerError = real_anthropic.InternalServerError
+                mock_anthropic.AuthenticationError = real_anthropic.AuthenticationError
+                mock_anthropic.BadRequestError = real_anthropic.BadRequestError
+                mock_anthropic.APIStatusError = real_anthropic.APIStatusError
+                mock_anthropic.APIError = real_anthropic.APIError
+                mock_anthropic.Anthropic.return_value = mock_client
+                with patch("ai_processor.time.sleep", side_effect=lambda d: sleep_calls.append(d)):
+                    result = ai_processor.process_single_article(
+                        "text", "fake-key",
+                    )
+
+        assert result["category"] == "其他"
+        # rate limit 使用 API_RATE_LIMIT_DELAY（30s）
+        assert sleep_calls[0] == ai_processor.API_RATE_LIMIT_DELAY
+
+    def test_max_retries_exceeded(self):
+        """重試次數用盡後拋出 RuntimeError"""
+        import anthropic as real_anthropic
+
+        mock_client = MagicMock()
+        conn_error = real_anthropic.APIConnectionError(request=MagicMock())
+        mock_client.messages.create.side_effect = conn_error
+
+        with patch.object(ai_processor, "HAS_ANTHROPIC", True):
+            with patch("ai_processor.anthropic") as mock_anthropic:
+                mock_anthropic.APIConnectionError = real_anthropic.APIConnectionError
+                mock_anthropic.APITimeoutError = real_anthropic.APITimeoutError
+                mock_anthropic.RateLimitError = real_anthropic.RateLimitError
+                mock_anthropic.InternalServerError = real_anthropic.InternalServerError
+                mock_anthropic.AuthenticationError = real_anthropic.AuthenticationError
+                mock_anthropic.BadRequestError = real_anthropic.BadRequestError
+                mock_anthropic.APIStatusError = real_anthropic.APIStatusError
+                mock_anthropic.APIError = real_anthropic.APIError
+                mock_anthropic.Anthropic.return_value = mock_client
+                with patch("ai_processor.time.sleep"):
+                    with pytest.raises(RuntimeError, match="重試.*次後仍然失敗"):
+                        ai_processor.process_single_article("text", "fake-key")
+
+        assert mock_client.messages.create.call_count == ai_processor.MAX_API_RETRIES
 
 
 # ============================================================

@@ -25,6 +25,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -62,6 +64,11 @@ DEFAULT_MAX_TOKENS = 2000
 DEFAULT_API_DELAY = 1.0  # 每次 API 呼叫之間的間隔（秒）
 MAX_ARTICLE_CHARS = 8000  # 超過此長度的文章會被截斷
 
+# API 重試設定
+MAX_API_RETRIES = 3
+API_RETRY_BASE_DELAY = 2.0  # 基礎重試延遲（秒），指數退避
+API_RATE_LIMIT_DELAY = 30.0  # 429 rate limit 時的等待時間（秒）
+
 # ============================================================
 # Anthropic SDK（選用）
 # ============================================================
@@ -81,7 +88,7 @@ _FRONTMATTER_RE = re.compile(r'^---\s*\n(.*?)\n---\s*\n', re.DOTALL)
 
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:
-    """解析 YAML frontmatter。
+    """解析 YAML frontmatter（使用 PyYAML）。
 
     Args:
         content: 完整的 Markdown 內容
@@ -95,40 +102,25 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
 
     fm_block = match.group(1)
     body = content[match.end():]
-    fm = {}
 
-    for line in fm_block.split('\n'):
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        # 解析 key: value
-        colon_idx = line.find(':')
-        if colon_idx < 0:
-            continue
-        key = line[:colon_idx].strip()
-        value = line[colon_idx + 1:].strip()
+    try:
+        fm = yaml.safe_load(fm_block)
+        if not isinstance(fm, dict):
+            fm = {}
+    except yaml.YAMLError:
+        logger.warning(f"YAML frontmatter 解析失敗，回傳空字典")
+        fm = {}
 
-        # 解析值
-        if value.startswith('"') and value.endswith('"'):
-            value = value[1:-1]
-        elif value.startswith("'") and value.endswith("'"):
-            value = value[1:-1]
-        elif value == '[]':
-            value = []
-        elif value.startswith('[') and value.endswith(']'):
-            # 簡單列表解析
-            inner = value[1:-1]
-            value = [v.strip().strip('"').strip("'") for v in inner.split(',') if v.strip()]
-        elif value == '""' or value == "''":
-            value = ""
-
-        fm[key] = value
+    # 正規化：把 None 值轉為空字串（保持向後相容）
+    for key, value in fm.items():
+        if value is None:
+            fm[key] = ""
 
     return fm, body
 
 
 def update_frontmatter(content: str, updates: dict) -> str:
-    """更新 frontmatter 欄位，保留其他欄位不變。
+    """更新 frontmatter 欄位，保留其他欄位不變（使用 PyYAML）。
 
     Args:
         content: 完整的 Markdown 內容
@@ -140,29 +132,14 @@ def update_frontmatter(content: str, updates: dict) -> str:
     fm, body = parse_frontmatter(content)
     fm.update(updates)
 
-    # 重建 frontmatter
-    lines = ["---"]
-    for key, value in fm.items():
-        if isinstance(value, list):
-            if not value:
-                lines.append(f"{key}: []")
-            else:
-                items = ', '.join(f'"{v}"' if isinstance(v, str) else str(v)
-                                 for v in value)
-                lines.append(f"{key}: [{items}]")
-        elif isinstance(value, str):
-            # 需要引號的情況
-            if ':' in value or '"' in value or value.startswith('['):
-                safe = value.replace('"', '\\"')
-                lines.append(f'{key}: "{safe}"')
-            else:
-                lines.append(f"{key}: {value}")
-        else:
-            lines.append(f"{key}: {value}")
-    lines.append("---")
-    lines.append("")
+    fm_str = yaml.dump(
+        fm,
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=False,
+    )
 
-    return '\n'.join(lines) + body
+    return f"---\n{fm_str}---\n{body}"
 
 
 # ============================================================
@@ -329,6 +306,35 @@ def _build_user_prompt(article_text: str, title: str = "") -> str:
     return f"{header}以下是文章內容：\n\n{article_text}"
 
 
+def _is_retryable_api_error(error) -> bool:
+    """判斷 API 錯誤是否值得重試。
+
+    可重試：429 RateLimitError, 5xx InternalServerError,
+            APIConnectionError, APITimeoutError
+    不可重試：401 AuthenticationError, 400 BadRequestError,
+              其他 4xx 錯誤
+    """
+    if not HAS_ANTHROPIC:
+        return False
+
+    # 網路連線和超時 → 重試
+    if isinstance(error, (anthropic.APIConnectionError, anthropic.APITimeoutError)):
+        return True
+    # Rate limit → 重試（但延遲更長）
+    if isinstance(error, anthropic.RateLimitError):
+        return True
+    # 5xx server error → 重試
+    if isinstance(error, anthropic.InternalServerError):
+        return True
+    # 401, 400, 其他 4xx → 不重試
+    if isinstance(error, (anthropic.AuthenticationError, anthropic.BadRequestError)):
+        return False
+    # 其他 APIStatusError → 檢查 status code
+    if isinstance(error, anthropic.APIStatusError):
+        return error.status_code >= 500
+    return False
+
+
 def process_single_article(
     article_text: str,
     api_key: str,
@@ -336,7 +342,7 @@ def process_single_article(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     title: str = "",
 ) -> dict:
-    """用 Claude API 處理單篇文章。
+    """用 Claude API 處理單篇文章（含自動重試）。
 
     Args:
         article_text: 文章正文
@@ -350,7 +356,7 @@ def process_single_article(
 
     Raises:
         ImportError: 未安裝 anthropic
-        RuntimeError: API 呼叫或回應解析失敗
+        RuntimeError: API 呼叫或回應解析失敗（已重試仍失敗）
     """
     if not HAS_ANTHROPIC:
         raise ImportError(
@@ -358,19 +364,50 @@ def process_single_article(
         )
 
     client = anthropic.Anthropic(api_key=api_key)
+    user_prompt = _build_user_prompt(article_text, title)
 
-    try:
-        message = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": _build_user_prompt(article_text, title),
-            }],
-        )
-    except anthropic.APIError as e:
-        raise RuntimeError(f"Claude API 錯誤：{e}") from e
+    # API 呼叫（含指數退避重試）
+    message = None
+    last_error = None
+
+    for attempt in range(MAX_API_RETRIES):
+        try:
+            message = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            break  # 成功，跳出重試迴圈
+
+        except anthropic.APIError as e:
+            last_error = e
+
+            if not _is_retryable_api_error(e):
+                # 不可重試的錯誤（401, 400 等），直接失敗
+                raise RuntimeError(f"Claude API 錯誤（不可重試）：{e}") from e
+
+            if attempt < MAX_API_RETRIES - 1:
+                # 計算重試延遲
+                if isinstance(e, anthropic.RateLimitError):
+                    delay = API_RATE_LIMIT_DELAY
+                    logger.warning(
+                        f"[AI] 🚫 遭遇速率限制，等待 {delay}s 後重試 "
+                        f"({attempt + 1}/{MAX_API_RETRIES})"
+                    )
+                else:
+                    delay = API_RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        f"[AI] ⚠️ API 錯誤：{e}，{delay}s 後重試 "
+                        f"({attempt + 1}/{MAX_API_RETRIES})"
+                    )
+                time.sleep(delay)
+            # 如果是最後一次嘗試，迴圈結束後會處理
+
+    if message is None:
+        raise RuntimeError(
+            f"Claude API 呼叫在重試 {MAX_API_RETRIES} 次後仍然失敗：{last_error}"
+        ) from last_error
 
     # 解析回應
     response_text = message.content[0].text.strip()
