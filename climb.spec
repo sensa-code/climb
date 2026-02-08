@@ -14,6 +14,18 @@ import glob
 block_cipher = None
 
 # ============================================================
+# 找到 certifi CA 證書（requests HTTPS 必需）
+# ============================================================
+try:
+    import certifi
+    certifi_dir = os.path.dirname(certifi.__file__)
+    certifi_datas = [(certifi_dir, "certifi")]
+    print(f"[CLIMB] 打包 certifi CA 證書: {certifi_dir}")
+except ImportError:
+    certifi_datas = []
+    print("[CLIMB] ⚠️ certifi 未安裝，HTTPS 請求可能失敗")
+
+# ============================================================
 # 找到 Playwright Chromium 瀏覽器
 # ============================================================
 
@@ -40,7 +52,7 @@ a = Analysis(
     datas=[
         ("config.json", "."),                    # 預設設定檔
         ("extension", "extension"),              # Chrome Extension 完整目錄
-    ] + pw_datas,
+    ] + pw_datas + certifi_datas,
     hiddenimports=[
         # 核心模組（root level .py，PyInstaller 可能不會自動偵測）
         "paths",
